@@ -1,0 +1,201 @@
+0. Dataset preparation (for all methods)
+
+Load & clean
+
+Read CSV → columns: id, s1, s2, label.
+
+Convert label to int (0/1).
+
+Drop rows with missing text; optionally strip whitespace, lowercase for traditional methods.
+
+Train/Dev/Test split
+
+If PAWS doesn’t already come split, do:
+
+80% train, 10% dev, 10% test (stratified by label).
+
+Keep dev exclusively for hyper-params + threshold tuning.
+
+Sanity checks
+
+Check class balance (PAWS is usually fairly balanced).
+
+Print a few examples where label=0 but sentences look very similar — that’s PAWS’s “gotcha”.
+
+You now have (s1, s2, y) splits to feed into all models.
+
+1. Traditional NLP baseline (TF-IDF + simple classifier)
+
+Goal: Best you can get from classic lexical methods (which PAWS is designed to break).
+
+Preprocess
+
+Tokenize with spaCy (en_core_web_sm).
+
+For TF-IDF you can:
+
+Lowercase.
+
+Optionally remove stopwords.
+
+Keep punctuation in char-level features (helps a bit with PAWS).
+
+Vectorize
+
+Build a TF-IDF vectorizer over sentence1 and sentence2 together:
+
+word n-grams: (1, 2)
+
+char n-grams: (3, 5)
+
+Pair features
+For each pair:
+
+tfidf_cos = cosine(tfidf(s1), tfidf(s2))
+
+jaccard_tokens
+
+len_diff = |len(s1_tokens) - len(s2_tokens)|
+
+Train classifier
+
+Train logistic regression (or linear SVM) on [tfidf_cos, jaccard_tokens, len_diff].
+
+Tune C / threshold on dev set.
+
+Evaluate
+
+Report accuracy, F1 on test set → this is your lexical baseline.
+
+2. Intermediate method: BERT embeddings + shallow classifier
+
+Goal: Use BERT as a feature extractor, still relatively simple & fast.
+
+Sentence embeddings
+
+Use bert-base-uncased (HuggingFace).
+
+For each sentence:
+
+Run through BERT, take [CLS] or mean pool last hidden states → embedding e.
+
+Pair features
+For (e1, e2):
+
+diff = |e1 − e2|
+
+prod = e1 * e2 (elementwise)
+
+cos_bert = cosine(e1, e2)
+
+Final feature vector: [diff, prod, cos_bert] (optionally append TF-IDF cosine).
+
+Classifier
+
+Train a small MLP (e.g. 1–2 hidden layers) or logistic regression.
+
+Tune on dev.
+
+Compare
+
+Compare metrics vs TF-IDF baseline.
+
+This shows how much semantic features help on PAWS.
+
+3. Sentence transformer bi-encoder (MiniLM) + fine-tuning
+
+Goal: Your main “modern” paraphrase detector.
+
+3.1 Use off-the-shelf embeddings
+
+Base model
+
+Load sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2.
+
+Scoring
+
+For each sentence, compute embedding u1, u2.
+
+cos_miniLM = cosine(u1, u2).
+
+On dev:
+
+Sweep thresholds (e.g. 0.5→0.9) to pick the best F1.
+
+Evaluate on test with that threshold.
+
+This is your pretrained bi-encoder baseline.
+
+3.2 Fine-tune MiniLM on PAWS (contrastive)
+
+Training pairs
+
+Positive: label=1 pairs.
+
+Negative: label=0 PAWS pairs (these are “hard” by design — perfect).
+
+Use sentence-transformers InputExample(texts=[s1, s2], label=float(label)).
+
+Loss
+
+Use CosineSimilarityLoss (or other contrastive loss) in sentence-transformers.
+
+Train for a few epochs; monitor performance on dev.
+
+After fine-tuning
+
+Re-encode dev/test.
+
+Re-tune cosine threshold on dev.
+
+Evaluate on test.
+
+Optional: classifier on top
+
+As before, build features:
+
+cos_miniLM, len_diff, maybe lexical overlaps.
+
+Train a simple logistic regression.
+
+Often yields a small but nice boost.
+
+This becomes your fast & strong production model.
+
+4. Cross-encoder (high-accuracy / re-ranker)
+
+Goal: Slow but more accurate model → “gold standard” or re-ranker.
+
+Model
+
+Start with bert-base-uncased or a cross-encoder from sentence-transformers.
+
+Input format: [CLS] s1 [SEP] s2 [SEP].
+
+Training
+
+Add a classification head on [CLS].
+
+Train with cross-entropy on PAWS (s1, s2, label).
+
+Evaluate on dev/test.
+
+Usage modes
+
+Direct classifier: predict paraphrase vs not for each pair (if total pairs are manageable).
+
+Re-ranker:
+
+Use MiniLM bi-encoder to get top-k candidate paraphrases for a given sentence.
+
+Re-score those k pairs with the cross-encoder to pick the best.
+
+Final view of your pipeline
+
+Baseline: TF-IDF + logistic regression.
+
+Mid-level: BERT embeddings + shallow classifier.
+
+Main workhorse: MiniLM bi-encoder (pretrained → fine-tuned on PAWS).
+
+Gold standard: Cross-encoder trained on PAWS, used for evaluation or re-ranking.
